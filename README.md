@@ -4,7 +4,7 @@ How far are we from a 15-minute city?
 
 ## Repository structure
 
-'''bash
+'''md
 .
 ├── AUTHORS.md
 ├── LICENSE
