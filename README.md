@@ -4,6 +4,7 @@ How far are we from a 15-minute city?
 
 ## Repository structure
 
+'''
 .
 ├── AUTHORS.md
 ├── LICENSE
@@ -25,3 +26,4 @@ How far are we from a 15-minute city?
     ├── models         <- Source code for your own model
     ├── tools          <- Any helper scripts go here
     └── **visualization**  <- Scripts for visualisation of your results, e.g., matplotlib, ggplot2 related.
+'''
