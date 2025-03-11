@@ -17,16 +17,24 @@ import numpy as np
 from tqdm import tqdm
 import requests
 from sklearn.cluster import KMeans
+import re
+import matplotlib.pyplot as plt
+
 import logging
+logging.basicConfig(level=logging.INFO)
 
 #import sys
 #sys.path.append('../src/data')
 from download_pois_networks import download_POIs
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+# ----------------------------------------- GLOBAL VARS --------------------------------------------------------
 
-# --------------------------------------------------------------------------------------------------
+EQUAL_AREA_PROJ = '+proj=cea'
+LON_LAT_PROJ = 'EPSG:4326'
+MERCATOR_PROJ = 'epsg:3395'
+API_KEY = "5b3ce3597851110001cf62482b4bfe101f794dca8be9b961ebbeb9b1"
+
+# -------------------------------------------- DATA PATH -------------------------------------------------------
 
 def get_raw_data_path():
     """Function to get path for raw data. Allows to retrieve correct path when calling from another script.
@@ -38,14 +46,7 @@ def get_raw_data_path():
     raw_data_path = os.path.join(main_path, "data/raw/")    
     return raw_data_path
 
-# --------------------------------------------------------------------------------------------------
-
-EQUAL_AREA_PROJ = '+proj=cea'
-LON_LAT_PROJ = 'EPSG:4326'
-MERCATOR_PROJ = 'epsg:3395'
-API_KEY = "5b3ce3597851110001cf62482b4bfe101f794dca8be9b961ebbeb9b1"
-
-# --------------------------------------------------------------------------------------------------
+# ------------------------------------------ HEXAGONAL GRID ----------------------------------------------------
 
 def create_hexagonal_grid(place_name, boundary, resolution=8, crs=LON_LAT_PROJ):
     """Create hexagonal grid inside boundary.
@@ -57,13 +58,14 @@ def create_hexagonal_grid(place_name, boundary, resolution=8, crs=LON_LAT_PROJ):
     Returns:
         GeoDataFrame: geodf of hexagons
     """
-    # --------------- CHECK FILE EXISTENCE ------------------------
+    # --------------- Check file existence ------------------------
 
     # Get raw data path
     raw_data_path = get_raw_data_path()
+    re_place_name = re.sub(r'[\s\W]+', '', place_name)
     
     # Define file path for the hexagonal grid
-    file_path_hex_grid = f"{raw_data_path}{place_name}_hex_grid_r{resolution}.pkl"
+    file_path_hex_grid = f"{raw_data_path}{re_place_name}_hex_grid_r{resolution}.pkl"
     
     # Check if the hexagonal grid file exists
     if os.path.exists(file_path_hex_grid):
@@ -72,7 +74,7 @@ def create_hexagonal_grid(place_name, boundary, resolution=8, crs=LON_LAT_PROJ):
             gdf_hex = pickle.load(f)
         return gdf_hex
 
-    # ---------------- HEXAGONAL GRID ------------------------------
+    # ---------------- Compute grid ------------------------------
 
     logging.info(f"Creating new hexagonal grid for {place_name} at resolution {resolution}")
 
@@ -113,17 +115,17 @@ def create_hexagonal_grid(place_name, boundary, resolution=8, crs=LON_LAT_PROJ):
 
     return gdf_hex
 
-# --------------------------------------------------------------------------------------------------
+# -------------------------------------------- CLUSTERING ------------------------------------------------------
 
 def KMeans_clustering(centroids,n_clusters=10):
-    """Perform KMeans clustering to obtain batches of clos-by centroids
+    """Perform KMeans clustering to obtain batches of close-by centroids.
 
     Args:
-        centroids (_type_): _description_
-        batch_size (int, optional): _description_. Defaults to 10.
+        centroids (Series): centroids of the hexagonal grid.
+        batch_size (int, optional): number of clusters. Defaults to 10.
 
     Returns:
-        _type_: _description_
+        list<Series>, list<list>: Lists of centroids in batches and their center.
     """
     # Extract x and y coordinates
     coords = centroids.apply(lambda c: [c.x, c.y])
@@ -144,6 +146,103 @@ def KMeans_clustering(centroids,n_clusters=10):
     
     return subseries, means
 
+def plot_hex_clusters(gdf_hex):
+    """Plot clustering of hexagons
+
+    Args:
+        gdf_hex (GeoDataFrame): gdf of hexagons
+    """
+    # Calculate centroids for all hexagons using equal_area_crs
+    gdf_centroids = gdf_hex.copy()
+    gdf_centroids.to_crs(EQUAL_AREA_PROJ)
+    centroids = gdf_centroids.geometry.centroid
+    centroids = centroids.to_crs(LON_LAT_PROJ)
+
+    # Perform clustering
+    gdf_clusters = gpd.GeoDataFrame(columns=['geometry','idx'])
+    centroids_batches, batch_means = KMeans_clustering(centroids,n_clusters=10)
+    for idx,centroids_batch in enumerate(centroids_batches):
+        gdf_temp = gpd.GeoDataFrame({'geometry':centroids_batch.values,'idx':[idx]*len(centroids_batch)})
+        gdf_clusters = pd.concat([gdf_clusters, gdf_temp], ignore_index=True)
+    gdf_clusters.to_crs(LON_LAT_PROJ)
+
+    # Plot
+    _,ax = plt.subplots()
+    gdf_hex.plot(ax=ax)
+    gdf_clusters.plot(column='idx',cmap='tab20c',ax=ax)
+    plt.savefig('../../reports/figures/hexagons_clustering.pdf')
+
+    pass
+
+# ------------------------------------------- EXISTING DATA ----------------------------------------------------
+
+def check_existing_data(place_name, tags):
+    """Check if travel time data already exists for a place and determine which tags are missing.
+    
+    Args:
+        place_name (str): Name of the place
+        tags (dict): Dictionary of tag types and values to analyze
+    
+    Returns:
+        tuple: (bool indicating if any files exist, dict of missing tags, existing geodf's or empty ones)
+    """
+    # Get raw data path
+    raw_data_path = get_raw_data_path()
+    re_place_name = re.sub(r'[\s\W]+', '', place_name)
+    
+    # Define file paths for travel times and nearest locations
+    file_path_travel_time = f"{raw_data_path}{re_place_name}_travel_times.pkl"
+    file_path_nearest_loc = f"{raw_data_path}{re_place_name}_nearest_loc.pkl"
+    
+    # Check if both files exist
+    files_exist = os.path.exists(file_path_travel_time) and os.path.exists(file_path_nearest_loc)
+    
+    # If files don't exist, all tags are missing
+    if not files_exist:
+        return False, tags, gpd.GeoDataFrame(), gpd.GeoDataFrame()
+    
+    # Load existing travel times data
+    try:
+        with open(file_path_travel_time, 'rb') as f:
+            existing_travel_data = pickle.load(f)
+        with open(file_path_nearest_loc, 'rb') as f:
+            existing_loc_data = pickle.load(f)
+            
+        # Get column names related to travel times
+        time_columns = [col for col in existing_travel_data.columns if col.startswith('timeto_')]
+        
+        # Extract existing tags from column names
+        existing_tags = {}
+        for col in time_columns:
+            # Parse tag from column name (format: timeto_tagkey_tagvalue)
+            parts = col.replace('timeto_', '').split('_')
+            if len(parts) >= 2:
+                tag_key = parts[0]
+                tag_value = '_'.join(parts[1:])  # Handle tag values that might contain underscores
+                
+                if tag_key not in existing_tags:
+                    existing_tags[tag_key] = []
+                
+                existing_tags[tag_key].append(tag_value)
+        
+        # Determine missing tags
+        missing_tags = {}
+        for tag_key, tag_values in tags.items():
+            missing_values = []
+            for tag_value in tag_values:
+                # Check if this tag_value exists for this tag_key
+                if tag_key not in existing_tags or tag_value not in existing_tags[tag_key]:
+                    missing_values.append(tag_value)
+            
+            if missing_values:
+                missing_tags[tag_key] = missing_values
+        
+        return True, missing_tags, existing_travel_data, existing_loc_data
+        
+    except (FileNotFoundError, pickle.UnpicklingError) as e:
+        logging.warning(f"Error loading existing data: {e}")
+        return False, tags
+    
 # --------------------------------------------------------------------------------------------------
 
 def closest_destinations_to_batch_mean(destinations, batch_mean, n_dest):
@@ -332,14 +431,15 @@ def save_results(gdf_travel_time, gdf_nearest_loc,place_name):
     """
     # Get raw data path
     raw_data_path = get_raw_data_path()
+    re_place_name = re.sub(r'[\s\W]+', '', place_name)
 
     # Dump travel times
-    file_path_travel_time = f"{raw_data_path}{place_name}_travel_times.pkl"
+    file_path_travel_time = f"{raw_data_path}{re_place_name}_travel_times.pkl"
     with open(file_path_travel_time, 'wb') as f:
         pickle.dump(gdf_travel_time, f)
 
     # Dump nearest locations
-    file_path_nearest_loc = f"{raw_data_path}{place_name}_nearest_loc.pkl"
+    file_path_nearest_loc = f"{raw_data_path}{re_place_name}_nearest_loc.pkl"
     with open(file_path_nearest_loc, 'wb') as f:
         pickle.dump(gdf_nearest_loc, f)
     print('Saved results')
@@ -348,69 +448,7 @@ def save_results(gdf_travel_time, gdf_nearest_loc,place_name):
 
 # --------------------------------------------------------------------------------------------------
 
-def check_existing_data(place_name, tags):
-    """Check if travel time data already exists for a place and determine which tags are missing.
-    
-    Args:
-        place_name (str): Name of the place
-        tags (dict): Dictionary of tag types and values to analyze
-    
-    Returns:
-        tuple: (bool indicating if any files exist, dict of missing tags)
-    """
-    # Get raw data path
-    raw_data_path = get_raw_data_path()
-    
-    # Define file paths for travel times and nearest locations
-    file_path_travel_time = f"{raw_data_path}{place_name}_travel_times.pkl"
-    file_path_nearest_loc = f"{raw_data_path}{place_name}_nearest_loc.pkl"
-    
-    # Check if both files exist
-    files_exist = os.path.exists(file_path_travel_time) and os.path.exists(file_path_nearest_loc)
-    
-    # If files don't exist, all tags are missing
-    if not files_exist:
-        return False, tags
-    
-    # Load existing travel times data
-    try:
-        with open(file_path_travel_time, 'rb') as f:
-            existing_data = pickle.load(f)
-            
-        # Get column names related to travel times
-        time_columns = [col for col in existing_data.columns if col.startswith('timeto_')]
-        
-        # Extract existing tags from column names
-        existing_tags = {}
-        for col in time_columns:
-            # Parse tag from column name (format: timeto_tagkey_tagvalue)
-            parts = col.replace('timeto_', '').split('_')
-            if len(parts) >= 2:
-                tag_key = parts[0]
-                tag_value = '_'.join(parts[1:])  # Handle tag values that might contain underscores
-                
-                if tag_key not in existing_tags:
-                    existing_tags[tag_key] = []
-                
-                existing_tags[tag_key].append(tag_value)
-        
-        # Determine missing tags
-        missing_tags = {}
-        for tag_key, tag_values in tags.items():
-            missing_values = []
-            for tag_value in tag_values:
-                # Check if this tag_value exists for this tag_key
-                if tag_key not in existing_tags or tag_value not in existing_tags[tag_key]:
-                    missing_values.append(tag_value)
-            
-            if missing_values:
-                missing_tags[tag_key] = missing_values
-        
-        return True, missing_tags
-        
-    except (FileNotFoundError, pickle.UnpicklingError) as e:
-        logging.warning(f"Error loading existing data: {e}")
-        return False, tags
+
 
 # --------------------------------------------------------------------------------------------------
 # --------------------------------------------------------------------------------------------------
@@ -418,32 +456,47 @@ def check_existing_data(place_name, tags):
 
 def main():
 
+    logging.info("Starting script\n")
+
+    # Set the two parameters
     place_name = "Vienna, Austria"
+    tags={'shop':['supermarket'],'leisure':['park']}
 
     # Download POIs
-    tags={'shop':['supermarket'],'leisure':['park']}
     boundary, pois = download_POIs(place_name=place_name, tags=tags)
+    logging.info("Downloaded POIs\n")
 
     # Create hexagonal grid
     gdf_hex = create_hexagonal_grid(place_name,boundary)
+    plot_hex_clusters(gdf_hex)
+    logging.info("Returned hexagonal grid.\n")
 
     # Check whether files already exist and which tags are missing
-    files_exist, missing_tags = check_existing_data(place_name,tags)
+    files_exist, missing_tags, existing_travel_data, existing_loc_data = check_existing_data(place_name,tags)
 
-    if missing_tags:
+    if not missing_tags:
+        logging.info("No missing tags. Terminating script.\n")
+        pass
+    logging.info("Missing tags. Proceeding to download data.\n")
+
+    # Get travel times and nearest locations for missing tags
+
+    #if missing_tags:
         # Get travel times and nearest locations
-        gdf_travel_time, gdf_nearest_loc = download_nearest_pois_travel_times(
-                                                gdf_hex, pois,
-                                                tags = missing_tags,
-                                                transport_mode='foot-walking'
-                                            )
+    #    gdf_travel_time, gdf_nearest_loc = download_nearest_pois_travel_times(
+    #                                            gdf_hex, pois,
+    #                                            tags = missing_tags,
+    #                                            transport_mode='foot-walking'
+    #                                        )
         
-        if files_exist:
+    #    if files_exist:
             # Concatenate dataframes to already existing ones
-            pass
+    #        pass
 
         # Save
-        save_results(gdf_travel_time, gdf_nearest_loc)
+    #    save_results(gdf_travel_time, gdf_nearest_loc)
+
+    logging.info("Script completed")
     
     pass
 
