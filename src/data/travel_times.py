@@ -26,7 +26,7 @@ LON_LAT_PROJ = 'EPSG:4326'
 MERCATOR_PROJ = 'epsg:3395'
 API_KEY = "5b3ce3597851110001cf62482b4bfe101f794dca8be9b961ebbeb9b1"
 REQ_FLATTENED_SHAPE_LIMIT=3500
-REQ_LIMIT=50
+REQ_RATE_LIMIT=40
 
 # -------------------------------------------- DATA PATH -------------------------------------------------------
 
@@ -123,7 +123,7 @@ def KMeans_clustering(centroids,n_clusters=10):
     """
     # Extract x and y coordinates
     coords = centroids.apply(lambda c: [c.x, c.y])
-    coords = np.array(coords.tolist())
+    coords = coords.tolist()
 
     # Perform clustering
     kmeans = KMeans(n_clusters=n_clusters, random_state=0, n_init='auto').fit(coords)
@@ -258,7 +258,26 @@ def closest_destinations_to_batch_mean(destinations, batch_mean, n_dest):
     
     # Return closest destinations
     closest_indices = np.argsort(distances)[:n_dest]
-    return destinations[closest_indices].tolist()
+    return [destinations[i] for i in closest_indices]
+
+def closest_centroid_idx(centroids_batch,source_coords):
+    """Find index of the closest centroid to given source.
+
+    Args:
+        centroids_batch (_type_): _description_
+        source (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
+    # Get centroids coords
+    centroids_coords = centroids_batch.apply(lambda c: [c.x,c.y])
+    centroids_coords = centroids_coords.tolist()
+    # Compute distances, argmin, associated index
+    distances = np.linalg.norm(np.array(centroids_coords)-np.array(source_coords),axis=1)
+    argmin = np.argmin(distances)
+    idx = centroids_batch.index[argmin]
+    return idx
 
 # --------------------------------------------------------------------------------------------------
 
@@ -266,7 +285,7 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
                                          tags={'shop': ['supermarket'], 'leisure': ['park']}, 
                                          transport_mode='foot-walking', 
                                          place_name='Vienna, Austria',
-                                         keep_closest=100,
+                                         keep_closest=250,
                                          ors_api_key=API_KEY,
                                          crs=LON_LAT_PROJ,
                                          areas_crs=EQUAL_AREA_PROJ
@@ -328,6 +347,7 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
     
     # ITERATE over filtered pois by tag
     for tag_name, filtered_pois in filtered_pois_by_tag.items():
+        logging.info(f"SEARCHING FOR CLOSEST {tag_name}\n")
 
         # Create copies of hexagonal grid to store results
         gdf_travel_time = gdf_hex.copy()
@@ -339,18 +359,20 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
         if filtered_pois.empty:
             gdf_travel_time[f"timeto_{tag_name}"] = np.nan
             gdf_nearest_loc[f"nearest_{tag_name}"] = np.nan
+            gdf_nearest_loc[f"nearest_{tag_name}"] = gdf_nearest_loc[f"nearest_{tag_name}"].astype('object')
             logging.warning(f"No POIs found for tag {tag_name}")
             continue
             
         # Create columns to store travel times and nearest POIs
         gdf_travel_time[f"timeto_{tag_name}"] = np.nan
         gdf_nearest_loc[f"nearest_{tag_name}"] = np.nan
+        gdf_nearest_loc[f"nearest_{tag_name}"] = gdf_nearest_loc[f"nearest_{tag_name}"].astype('object')
         
         # Max 3500 routes per request are allowed, 500 requests per day
         # Obtain batches of hexagons by spatial clustering
-        batch_size = int(REQ_FLATTENED_SHAPE_LIMIT-100)/keep_closest
+        batch_size = int((REQ_FLATTENED_SHAPE_LIMIT-1000)/keep_closest)
         n_clusters = int(len(centroids)/batch_size)
-        logging.info(f"Looking for {n_clusters} of size {batch_size}")
+        logging.info(f"Looking for {n_clusters} clusters of size {batch_size}\n")
         centroids_batches, batches_means = KMeans_clustering(centroids,n_clusters=n_clusters)
         
         # ITERATE over hexagons in batches to respect rate limits
@@ -358,7 +380,7 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
 
             # Store batch of centroids as origins
             coords = centroids_batch.apply(lambda c: [c.x, c.y])
-            coords = np.array(coords.tolist())
+            coords = coords.tolist()
             sources = coords.copy()
                 
             # Store relevant POIs as destinations
@@ -369,16 +391,17 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
                     destinations.append([poi.geometry.x, poi.geometry.y])
                 else:
                     # For non-point geometries (ways, relations), use centroid
-                    poi_ = poi.copy()
-                    poi_.to_crs(areas_crs)
-                    poi_centroid = poi_.geometry.centroid
+                    # Create a single-row GeoDataFrame from the Series
+                    poi_gdf = gpd.GeoDataFrame([poi], geometry='geometry', crs=filtered_pois.crs)
+                    poi_gdf = poi_gdf.to_crs(areas_crs)
+                    poi_centroid = poi_gdf.geometry.iloc[0].centroid
                     # Convert back to lon-lat crs
-                    poi_centroid = list(transformer.transform(poi_centroid))
+                    poi_centroid = list(transformer.transform(poi_centroid.x, poi_centroid.y))
                     destinations.append(poi_centroid)
 
             # Pre-screening based on Euclidean distance
             destinations = closest_destinations_to_batch_mean(destinations,batch_mean,n_dest=keep_closest)
-            logging.info(f"Retained {len(destinations)} destinations.\n")
+            #logging.info(f"\tMinimizing among {len(destinations)} destinations.\n")
 
             # Define full list of locations
             locations = sources+destinations
@@ -394,25 +417,31 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
                 call = requests.post(ors_url, json=body, headers=headers)
                 results = call.json()
                 logging.debug(f"API Results: {results}")
-                if 'error' in results.keys():
+                if 'error' in results.keys() or not results['destinations'] or not results['sources'] or not results['durations']:
                     error = True
+                    print(results)
                     break
                 # Extract relevant data into DataFrame
                 res_durations = results["durations"]
                 res_sources = [tuple(s["location"]) for s in results["sources"]]
                 res_destinations = [tuple(d["location"]) for d in results["destinations"]]
+                logging.info(len(res_destinations))
                 df_durations = pd.DataFrame(res_durations,index=res_sources,columns=res_destinations)
                 
                 # For each centroid, find the shortest time and location for any POI category
-                for idx, duration_series in df_durations.iterrows():
-                    if duration_series:  # If we have any valid durations
+                for source_, duration_series in df_durations.iterrows():
+                    if not duration_series.empty: 
+                        # Find min and argmin
                         min_duration = duration_series.min()
                         min_location = duration_series.idxmin()
-                        gdf_travel_time.loc[centroids_batch.index[idx], f"timeto_{tag_name}"] = min_duration / 60  # Convert to minutes
-                        gdf_nearest_loc.loc[centroids_batch.index[idx], f"nearest_{tag_name}"] = min_location
+                        # Find the corresponding index in centroids_batch
+                        idx = closest_centroid_idx(centroids_batch,list(source_))  # Returned locs are not exactly the same, find nearest
+                        # Store results
+                        gdf_travel_time.at[idx, f"timeto_{tag_name}"] = min_duration / 60  # Convert to minutes
+                        gdf_nearest_loc.at[idx, f"nearest_{tag_name}"] = min_location
                 
-                # Time sleep
-                time.sleep(2)
+                # Time sleep to respect rate limit
+                time.sleep(60/REQ_RATE_LIMIT)
                 
             except requests.exceptions.RequestException as e:
                 error=True
@@ -426,7 +455,7 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
 
         if error==False:
             # tag_name has been completed
-            logging.info(f"Computed travel times and nearest locations for {tag_name}\n")
+            logging.info(f"COMPUTED TRAV. TIMES AND NEAREST LOCS FOR {tag_name}\n")
             gdf_travel_time, gdf_nearest_loc = save_results(gdf_travel_time, gdf_nearest_loc, place_name, resolution)
 
     return gdf_travel_time, gdf_nearest_loc
@@ -514,9 +543,9 @@ def main():
                                             tags = missing_tags,
                                             transport_mode='foot-walking',
                                             place_name=place_name,
-                                            keep_closest=100
+                                            keep_closest=250
                                         )
-    logging.info("Downloaded all trvel times and nearest locations.\n")
+    logging.info("Downloaded all travel times and nearest locations.\n")
 
     logging.info("Script completed")
     
