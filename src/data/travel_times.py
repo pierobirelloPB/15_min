@@ -1,30 +1,22 @@
 import numpy as np
 import pandas as pd
 import geopandas as gpd
-import osmnx as ox
+import matplotlib.pyplot as plt
+import re
 import os
 import pickle
-from h3 import h3
-from shapely.geometry import Polygon
-import geopandas as gpd
-import pandas as pd
-import geopandas as gpd
-import requests
-import time
-from shapely.geometry import Point
-from pyproj import Transformer
-import numpy as np
 from tqdm import tqdm
 import requests
+import time
 from sklearn.cluster import KMeans
-import re
-import matplotlib.pyplot as plt
+
+from h3 import h3
+from shapely.geometry import Point, Polygon
+from pyproj import Transformer
 
 import logging
 logging.basicConfig(level=logging.INFO)
 
-#import sys
-#sys.path.append('../src/data')
 from download_pois_networks import download_POIs
 
 # ----------------------------------------- GLOBAL VARS --------------------------------------------------------
@@ -33,6 +25,8 @@ EQUAL_AREA_PROJ = '+proj=cea'
 LON_LAT_PROJ = 'EPSG:4326'
 MERCATOR_PROJ = 'epsg:3395'
 API_KEY = "5b3ce3597851110001cf62482b4bfe101f794dca8be9b961ebbeb9b1"
+REQ_FLATTENED_SHAPE_LIMIT=3500
+REQ_LIMIT=50
 
 # -------------------------------------------- DATA PATH -------------------------------------------------------
 
@@ -275,9 +269,8 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
                                          keep_closest=100,
                                          ors_api_key=API_KEY,
                                          crs=LON_LAT_PROJ,
-                                         areas_crs=EQUAL_AREA_PROJ,
-                                         req_flattened_shape_limit=3500,
-                                         req_limit=50):
+                                         areas_crs=EQUAL_AREA_PROJ
+                                         ):
     """
     Calculate travel times from each hexagon centroid to the nearest POI of each specified tag type.
     
@@ -346,6 +339,7 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
         if filtered_pois.empty:
             gdf_travel_time[f"timeto_{tag_name}"] = np.nan
             gdf_nearest_loc[f"nearest_{tag_name}"] = np.nan
+            logging.warning(f"No POIs found for tag {tag_name}")
             continue
             
         # Create columns to store travel times and nearest POIs
@@ -354,7 +348,7 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
         
         # Max 3500 routes per request are allowed, 500 requests per day
         # Obtain batches of hexagons by spatial clustering
-        batch_size = int(req_flattened_shape_limit-100)/keep_closest
+        batch_size = int(REQ_FLATTENED_SHAPE_LIMIT-100)/keep_closest
         n_clusters = int(len(centroids)/batch_size)
         logging.info(f"Looking for {n_clusters} of size {batch_size}")
         centroids_batches, batches_means = KMeans_clustering(centroids,n_clusters=n_clusters)
@@ -399,10 +393,10 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
             try:
                 call = requests.post(ors_url, json=body, headers=headers)
                 results = call.json()
-                print(results)
+                logging.debug(f"API Results: {results}")
                 if 'error' in results.keys():
                     error = True
-                    continue
+                    break
                 # Extract relevant data into DataFrame
                 res_durations = results["durations"]
                 res_sources = [tuple(s["location"]) for s in results["sources"]]
@@ -413,7 +407,7 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
                 for idx, duration_series in df_durations.iterrows():
                     if duration_series:  # If we have any valid durations
                         min_duration = duration_series.min()
-                        min_location = duration_series.index(duration_series.argmin())
+                        min_location = duration_series.idxmin()
                         gdf_travel_time.loc[centroids_batch.index[idx], f"timeto_{tag_name}"] = min_duration / 60  # Convert to minutes
                         gdf_nearest_loc.loc[centroids_batch.index[idx], f"nearest_{tag_name}"] = min_location
                 
@@ -433,9 +427,9 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
         if error==False:
             # tag_name has been completed
             logging.info(f"Computed travel times and nearest locations for {tag_name}\n")
-            save_results(gdf_travel_time, gdf_nearest_loc, place_name, resolution)
+            gdf_travel_time, gdf_nearest_loc = save_results(gdf_travel_time, gdf_nearest_loc, place_name, resolution)
 
-    pass
+    return gdf_travel_time, gdf_nearest_loc
 
 # --------------------------------------------------------------------------------------------------
 
@@ -480,7 +474,8 @@ def save_results(gdf_travel_time, gdf_nearest_loc, place_name, resolution):
         pickle.dump(gdf_nearest_loc, f)
 
     logging.info('Saved results\n')
-    pass
+    
+    return gdf_travel_time, gdf_nearest_loc
 
 # --------------------------------------------------------------------------------------------------
 # --------------------------------------------------------------------------------------------------
