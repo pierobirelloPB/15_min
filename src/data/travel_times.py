@@ -185,8 +185,8 @@ def check_existing_data(place_name, tags, resolution):
     re_place_name = re.sub(r'[\s\W]+', '', place_name)
     
     # Define file paths for travel times and nearest locations
-    file_path_travel_time = f"{raw_data_path}{re_place_name}__r{resolution}_travel_times.pkl"
-    file_path_nearest_loc = f"{raw_data_path}{re_place_name}__r{resolution}_nearest_loc.pkl"
+    file_path_travel_time = f"{raw_data_path}{re_place_name}_r{resolution}_travel_times.pkl"
+    file_path_nearest_loc = f"{raw_data_path}{re_place_name}_r{resolution}_nearest_loc.pkl"
     
     # Check if both files exist
     files_exist = os.path.exists(file_path_travel_time) and os.path.exists(file_path_nearest_loc)
