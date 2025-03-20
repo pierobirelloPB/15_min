@@ -91,7 +91,7 @@ def download_POIs(place_name="Vienna, Austria", tags={'shop':['supermarket'],'le
             
             # Combine with existing data (avoiding duplicates)
             if not new_pois.empty:
-                pois = pd.concat([existing_pois, new_pois]).drop_duplicates()
+                pois = pd.concat([existing_pois, new_pois])#.drop_duplicates()
                 with open(file_path, 'wb') as f:
                     pickle.dump(pois, f)
             else:
@@ -290,22 +290,26 @@ def main():
     logging.info("Starting script")
 
     # Download POIs
-    tags={'shop':['supermarket'],'leisure':['park']}
+    tags={'shop':['supermarket'],'leisure':['park'],'amenity':['school','hospital']}
     boundary, pois = download_POIs(place_name="Vienna, Austria", tags=tags)
 
     # Download networks
     boundary, networks = download_street_network("Vienna, Austria", network_types=['drive', 'bike', 'walk'])
         
-    # Convert to GeoDataFrame for visualization
-    streets_gdf = networks_to_gdf(networks)
+    networks_bool = False
 
-    # Analyze networks
-    network_stats = analyze_street_network(networks)
-    print("\nNetwork Statistics:")
-    for network_type, stats in network_stats.items():
-        print(f"\n{network_type.capitalize()} Network:")
-        for stat, value in stats.items():
-            print(f"  {stat}: {value:.2f}" if isinstance(value, float) else f"  {stat}: {value}")
+    if networks_bool:
+
+        # Convert to GeoDataFrame for visualization
+        streets_gdf = networks_to_gdf(networks)
+
+        # Analyze networks
+        network_stats = analyze_street_network(networks)
+        print("\nNetwork Statistics:")
+        for network_type, stats in network_stats.items():
+            print(f"\n{network_type.capitalize()} Network:")
+            for stat, value in stats.items():
+                print(f"  {stat}: {value:.2f}" if isinstance(value, float) else f"  {stat}: {value}")
 
     logging.info("Script completed")
 

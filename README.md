@@ -2,6 +2,14 @@
 
 How far are we from a 15-minute city?
 
+Scripts:
+* src/data/download_pois_networks.py -> download POIs and networks
+* src/data/travel_times.py -> compute time required to reach nearest amenities
+
+Notebooks:
+* notebooks/travel_times_example.ipynb -> visualize POIs and accessibility
+
+
 ## Repository structure
 
 ```
