@@ -346,6 +346,24 @@ def closest_centroid_idx(centroids_batch,source_coords):
     idx = centroids_batch.index[argmin]
     return idx
 
+def closest_source_to_centroid(res_sources_list,centroid_):
+    """Find index of the closest source to given centroid.
+
+    Args:
+        centroids_batch (_type_): _description_
+        source (_type_): _description_
+
+    Returns:
+        _type_: _description_
+    """
+    # Get centroid coords
+    centroid_coords = [centroid_.x,centroid_.y]
+    # Compute distances, argmin, associated index
+    distances = np.linalg.norm(np.array(res_sources_list)-np.array(centroid_coords),axis=1)
+    argmin = np.argmin(distances)
+    closest_source = tuple(res_sources_list[argmin])
+    return closest_source
+
 # --------------------------------------------------------------------------------------------------
 
 def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
@@ -495,18 +513,44 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
                 res_destinations = [tuple(d["location"]) for d in results["destinations"]]
                 logging.info(len(res_destinations))
                 df_durations = pd.DataFrame(res_durations,index=res_sources,columns=res_destinations)
+                df_durations.index = df_durations.index.map(tuple)
+
+                # Find NaN entries and print their locations
+                nan_positions = np.where(df_durations.isna())
+                nan_indices = list(zip(df_durations.index[nan_positions[0]], df_durations.columns[nan_positions[1]]))
+                if nan_indices:
+                    print(f"Found {len(nan_indices)} NaN entries:")
+                    for idx, col in nan_indices:
+                        print(f"NaN at index: {idx}, column: {col}")
                 
                 # For each centroid, find the shortest time and location for any POI category
-                for source_, duration_series in df_durations.iterrows():
-                    if not duration_series.empty: 
+                
+                res_sources_list = [list(source_) for source_ in res_sources]
+                for idx,centroid_ in centroids_batch.items():
+                    # Find the corresponding source
+                    source_ = closest_source_to_centroid(res_sources_list,centroid_)
+                    duration_series = df_durations.loc[source_,:]
+                    # Find min and argmin
+                    min_duration = duration_series.min()
+                    min_location = duration_series.idxmin()
+                    # Store results
+                    gdf_travel_time.at[idx, f"timeto_{tag_name}"] = min_duration / 60  # Convert to minutes
+                    gdf_nearest_loc.at[idx, f"nearest_{tag_name}"] = min_location
+
+                #idx_checker = []
+                #for source_, duration_series in df_durations.iterrows():
+                #    if not duration_series.empty: 
                         # Find min and argmin
-                        min_duration = duration_series.min()
-                        min_location = duration_series.idxmin()
+                #        min_duration = duration_series.min()
+                #        min_location = duration_series.idxmin()
                         # Find the corresponding index in centroids_batch
-                        idx = closest_centroid_idx(centroids_batch,list(source_))  # Returned locs are not exactly the same, find nearest
+                #        idx, idx_checker = closest_centroid_idx(centroids_batch,list(source_))  # Returned locs are not exactly the same, find nearest
                         # Store results
-                        gdf_travel_time.at[idx, f"timeto_{tag_name}"] = min_duration / 60  # Convert to minutes
-                        gdf_nearest_loc.at[idx, f"nearest_{tag_name}"] = min_location
+                #        gdf_travel_time.at[idx, f"timeto_{tag_name}"] = min_duration / 60  # Convert to minutes
+                #        gdf_nearest_loc.at[idx, f"nearest_{tag_name}"] = min_location
+                #    else:
+                #        print(f"Empty duration series found with source {source_}")
+                #        error=True
                 
                 # Time sleep to respect rate limit
                 time.sleep(60/REQ_RATE_LIMIT)
