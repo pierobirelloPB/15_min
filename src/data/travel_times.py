@@ -13,6 +13,7 @@ from sklearn.cluster import KMeans
 from h3 import h3
 from shapely.geometry import Point, Polygon
 from pyproj import Transformer
+import math
 
 import logging
 logging.basicConfig(level=logging.INFO)
@@ -140,30 +141,96 @@ def KMeans_clustering(centroids,n_clusters=10):
     
     return subseries, means
 
-def plot_hex_clusters(gdf_hex):
-    """Plot clustering of hexagons
+def grid_clustering(centroids, n_clusters=10):
+    """Perform grid-based clustering to obtain batches of close-by centroids.
+    Clusters are created using a grid of equal-sized square cells.
 
     Args:
-        gdf_hex (GeoDataFrame): gdf of hexagons
-    """
-    # Calculate centroids for all hexagons using equal_area_crs
-    gdf_centroids = gdf_hex.copy()
-    gdf_centroids.to_crs(EQUAL_AREA_PROJ)
-    centroids = gdf_centroids.geometry.centroid
-    centroids = centroids.to_crs(LON_LAT_PROJ)
+        centroids (Series): centroids of the hexagonal grid.
+        n_clusters (int, optional): approximate number of clusters to create. Defaults to 10.
 
-    # Perform clustering
+    Returns:
+        list<Series>, list<list>: Lists of centroids in batches and their center.
+    """
+    
+    # Extract x and y coordinates
+    coords = centroids.apply(lambda c: [c.x, c.y])
+    coords = np.array(coords.tolist())
+    
+    # Find min and max coordinates to determine grid boundaries
+    min_x, min_y = np.min(coords, axis=0)
+    max_x, max_y = np.max(coords, axis=0)
+    
+    # Calculate the range in both dimensions
+    range_x = max_x - min_x
+    range_y = max_y - min_y
+    
+    # Determine cell size
+    cell_size = math.sqrt(range_x*range_y/n_clusters) #max(range_x, range_y) / math.sqrt(n_clusters)
+    
+    # Calculate number of cells in each dimension
+    num_cells_x = math.ceil(range_x / cell_size)
+    num_cells_y = math.ceil(range_y / cell_size)
+    
+    # Initialize structures
+    subseries = []
+    means = []
+    
+    # Create the grid with square cells
+    for i in range(num_cells_x):
+        for j in range(num_cells_y):
+            # Calculate cell boundaries
+            cell_min_x = min_x + i * cell_size
+            cell_max_x = min_x + (i + 1) * cell_size
+            cell_min_y = min_y + j * cell_size
+            cell_max_y = min_y + (j + 1) * cell_size
+            
+            # Find points in this cell
+            indices = []
+            for idx, point in enumerate(coords):
+                if (cell_min_x <= point[0] < cell_max_x and 
+                    cell_min_y <= point[1] < cell_max_y):
+                    indices.append(idx)
+            
+            # Only add non-empty cells
+            if indices:
+                # Create subseries using the original centroids Series
+                subseries.append(centroids.iloc[indices])
+                
+                # Calculate center of the cell
+                center_x = (cell_min_x + cell_max_x) / 2
+                center_y = (cell_min_y + cell_max_y) / 2
+                means.append([center_x, center_y])
+    
+    return subseries, means
+
+
+def plot_hex_clusters(centroids_batches, batch_means):
+    """Plot clustering of centroids.
+
+    Args:
+        centroids_batches (list<Series>): _description_
+        batch_means (list<list>): _description_
+    """
+
+    # Gdf clusters
     gdf_clusters = gpd.GeoDataFrame(columns=['geometry','idx'])
-    centroids_batches, batch_means = KMeans_clustering(centroids,n_clusters=10)
+    gdf_clusters.set_crs(LON_LAT_PROJ)
     for idx,centroids_batch in enumerate(centroids_batches):
         gdf_temp = gpd.GeoDataFrame({'geometry':centroids_batch.values,'idx':[idx]*len(centroids_batch)})
         gdf_clusters = pd.concat([gdf_clusters, gdf_temp], ignore_index=True)
-    gdf_clusters.to_crs(LON_LAT_PROJ)
+    gdf_clusters = gdf_clusters.to_crs(MERCATOR_PROJ)
+
+    # Gdf means
+    gdf_means = gpd.GeoSeries([Point(m[0], m[1]) for m in batch_means],crs=LON_LAT_PROJ)
+    gdf_means = gdf_means.to_crs(MERCATOR_PROJ)
 
     # Plot
     _,ax = plt.subplots()
-    gdf_hex.plot(ax=ax)
+    #gdf_hex = gdf_hex.to_crs(MERCATOR_PROJ)
+    #gdf_hex.plot(ax=ax)
     gdf_clusters.plot(column='idx',cmap='tab20c',ax=ax)
+    gdf_means.plot(ax=ax,color='k')
     plt.savefig('../../reports/figures/hexagons_clustering.pdf')
 
     pass
@@ -285,7 +352,7 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
                                          tags={'shop': ['supermarket'], 'leisure': ['park']}, 
                                          transport_mode='foot-walking', 
                                          place_name='Vienna, Austria',
-                                         keep_closest=250,
+                                         keep_closest=500,
                                          ors_api_key=API_KEY,
                                          crs=LON_LAT_PROJ,
                                          areas_crs=EQUAL_AREA_PROJ
@@ -342,6 +409,14 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
 
     # ---------------- REQUEST DURATIONS -------------------
 
+    # Max 3500 routes per request are allowed, 500 requests per day
+    # Obtain batches of hexagons by spatial clustering
+    batch_size = math.floor((REQ_FLATTENED_SHAPE_LIMIT-1500)/keep_closest)
+    n_clusters = math.ceil(len(centroids)/batch_size)
+    logging.info(f"Looking for {n_clusters} clusters of size {batch_size}\n")
+    centroids_batches, batches_means = grid_clustering(centroids,n_clusters=n_clusters)
+    plot_hex_clusters(centroids_batches,batches_means)
+
     # Boolean error variable
     error=False
     
@@ -367,13 +442,22 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
         gdf_travel_time[f"timeto_{tag_name}"] = np.nan
         gdf_nearest_loc[f"nearest_{tag_name}"] = np.nan
         gdf_nearest_loc[f"nearest_{tag_name}"] = gdf_nearest_loc[f"nearest_{tag_name}"].astype('object')
-        
-        # Max 3500 routes per request are allowed, 500 requests per day
-        # Obtain batches of hexagons by spatial clustering
-        batch_size = int((REQ_FLATTENED_SHAPE_LIMIT-1000)/keep_closest)
-        n_clusters = int(len(centroids)/batch_size)
-        logging.info(f"Looking for {n_clusters} clusters of size {batch_size}\n")
-        centroids_batches, batches_means = KMeans_clustering(centroids,n_clusters=n_clusters)
+
+        # Store relevant POIs as destinations
+        all_destinations = []
+        for _, poi in filtered_pois.iterrows():
+            if isinstance(poi.geometry, Point):
+                # For Points, use coordinates
+                all_destinations.append([poi.geometry.x, poi.geometry.y])
+            else:
+                # For non-point geometries (ways, relations), use centroid
+                # Create a single-row GeoDataFrame from the Series
+                poi_gdf = gpd.GeoDataFrame([poi], geometry='geometry', crs=filtered_pois.crs)
+                poi_gdf = poi_gdf.to_crs(areas_crs)
+                poi_centroid = poi_gdf.geometry.iloc[0].centroid
+                # Convert back to lon-lat crs
+                poi_centroid = list(transformer.transform(poi_centroid.x, poi_centroid.y))
+                all_destinations.append(poi_centroid)
         
         # ITERATE over hexagons in batches to respect rate limits
         for i,(centroids_batch, batch_mean) in tqdm(enumerate(zip(centroids_batches, batches_means))):
@@ -382,25 +466,9 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
             coords = centroids_batch.apply(lambda c: [c.x, c.y])
             coords = coords.tolist()
             sources = coords.copy()
-                
-            # Store relevant POIs as destinations
-            destinations = []
-            for _, poi in filtered_pois.iterrows():
-                if isinstance(poi.geometry, Point):
-                    # For Points, use coordinates
-                    destinations.append([poi.geometry.x, poi.geometry.y])
-                else:
-                    # For non-point geometries (ways, relations), use centroid
-                    # Create a single-row GeoDataFrame from the Series
-                    poi_gdf = gpd.GeoDataFrame([poi], geometry='geometry', crs=filtered_pois.crs)
-                    poi_gdf = poi_gdf.to_crs(areas_crs)
-                    poi_centroid = poi_gdf.geometry.iloc[0].centroid
-                    # Convert back to lon-lat crs
-                    poi_centroid = list(transformer.transform(poi_centroid.x, poi_centroid.y))
-                    destinations.append(poi_centroid)
 
             # Pre-screening based on Euclidean distance
-            destinations = closest_destinations_to_batch_mean(destinations,batch_mean,n_dest=keep_closest)
+            destinations = closest_destinations_to_batch_mean(all_destinations,batch_mean,n_dest=keep_closest)
             #logging.info(f"\tMinimizing among {len(destinations)} destinations.\n")
 
             # Define full list of locations
@@ -517,7 +585,7 @@ def main():
 
     # Set the two parameters
     place_name = "Vienna, Austria"
-    tags={'shop':['supermarket'],'leisure':['park']}
+    tags={'shop':['supermarket']}#,'leisure':['park']}
     resolution=8
 
     # Download POIs
@@ -526,7 +594,6 @@ def main():
 
     # Create hexagonal grid
     gdf_hex = create_hexagonal_grid(place_name,boundary,resolution=resolution)
-    plot_hex_clusters(gdf_hex)
     logging.info("Returned hexagonal grid.\n")
 
     # Check whether files already exist and which tags are missing
