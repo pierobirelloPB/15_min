@@ -507,10 +507,24 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
                     error = True
                     print(results)
                     break
+
                 # Extract relevant data into DataFrame
+                #res_durations = results["durations"]
+                #res_sources = [tuple(s["location"]) for s in results["sources"]]
+                #res_destinations = [tuple(d["location"]) for d in results["destinations"]]
+
+                # Extract relevant data into df: Filter valid sources, dest, values ignoring None
+                valid_sources = [
+                    (i, tuple(s["location"])) for i, s in enumerate(results["sources"]) if s and "location" in s and s["location"]]
+                valid_destinations = [
+                    (j, tuple(d["location"])) for j, d in enumerate(results["destinations"]) if d and "location" in d and d["location"]]
+                valid_source_indices, res_sources = zip(*valid_sources) if valid_sources else ([], [])
+                valid_dest_indices, res_destinations = zip(*valid_destinations) if valid_destinations else ([], [])
                 res_durations = results["durations"]
-                res_sources = [tuple(s["location"]) for s in results["sources"]]
-                res_destinations = [tuple(d["location"]) for d in results["destinations"]]
+                res_durations = [
+                    [row[j] for j in valid_dest_indices] for i, row in enumerate(res_durations) if i in valid_source_indices]
+                
+                # Put into dataframe
                 logging.info(len(res_destinations))
                 df_durations = pd.DataFrame(res_durations,index=res_sources,columns=res_destinations)
                 df_durations.index = df_durations.index.map(tuple)
@@ -524,7 +538,6 @@ def download_nearest_pois_travel_times(gdf_hex, pois, resolution,
                         print(f"NaN at index: {idx}, column: {col}")
                 
                 # For each centroid, find the shortest time and location for any POI category
-                
                 res_sources_list = [list(source_) for source_ in res_sources]
                 for idx,centroid_ in centroids_batch.items():
                     # Find the corresponding source
@@ -602,9 +615,9 @@ def save_results(gdf_travel_time, gdf_nearest_loc, place_name, resolution):
         with open(file_path_nearest_loc, 'rb') as f:
             existing_loc_data = pickle.load(f)
         # Merge travel times
-        gdf_travel_time = existing_travel_data.merge(gdf_travel_time,on='geometry')
+        gdf_travel_time = existing_travel_data.merge(gdf_travel_time,on='geometry',suffixes=("_existing", "_new"))
         # Merge nearest locations
-        gdf_nearest_loc = existing_loc_data.merge(gdf_nearest_loc,on='geometry')
+        gdf_nearest_loc = existing_loc_data.merge(gdf_nearest_loc,on='geometry',suffixes=("_existing", "_new"))
 
     # Dump travel times
     with open(file_path_travel_time, 'wb') as f:
@@ -629,7 +642,7 @@ def main():
 
     # Set the two parameters
     place_name = "Vienna, Austria"
-    tags={'shop':['supermarket']}#,'leisure':['park']}
+    tags={'shop':['supermarket'],'amenity':['school','hospital'],'leisure':['park']}
     resolution=8
 
     # Download POIs
