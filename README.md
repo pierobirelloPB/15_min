@@ -1,13 +1,27 @@
 # Isochrones and services accessibility in Vienna.
 
-How far are we from a 15-minute city?
+How far is Vienna from being a 15-minute city? Project to collect POIs, routing and accessibility data.
 
-Scripts:
-* src/data/download_pois_networks.py -> download POIs and networks
-* src/data/travel_times.py -> compute time required to reach nearest amenities
+Scripts - in src/data/:
+* download_pois_networks.py -> download POIs and networks from Open Street Maps.
+* travel_times.py -> create a grid tessellation for the selected city; per each grid cell, obtain and save location of the nearest POI of given category, and the time required to reach it. 
 
-Notebooks:
-* notebooks/travel_times_example.ipynb -> visualize POIs and accessibility
+Notebooks - in notebooks/:
+* clustering centroids.ipynb -> a comparison of two methods to group cells into clusters; this is used to reduce the number of API calls.
+* download_pois_networks_example.ipynb -> read and visualize the data collected by the homonymous script.
+* travel_times_example.ipynb -> read and visualize the data collected by the homonimous script.
+* isochrone_function.ipynb -> obtain isochrones centered in given POIs, compute their unions and intersections, visualize on map.
+
+Data - in data/raw/:
+* ViennaAustria.pkl -> POIs.
+* ViennaAustria_networks.pkl -> street networks.
+* ViennaAustria_r8_hex_grif.pkl -> hexagonal grid.
+* ViennaAustria_r8_nearest_loc -> nearest locations.
+* ViennaAustria_r8_travel_times -> travel times.
+
+Additional data - in notebooks/:
+* isochrone_overlap_map.html -> isochrones map.
+* isochrone_results.json -> results from isochrone_function.ipynb.
 
 
 ## Repository structure
@@ -33,5 +47,5 @@ Notebooks:
     ├── external       <- Any external source code, e.g., pull other git projects, or external libraries
     ├── models         <- Source code for your own model
     ├── tools          <- Any helper scripts go here
-    └── **visualization**  <- Scripts for visualisation of your results, e.g., matplotlib, ggplot2 related.
+    └── visualization  <- Scripts for visualisation of your results, e.g., matplotlib, ggplot2 related.
 ```
