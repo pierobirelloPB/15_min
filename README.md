@@ -2,6 +2,8 @@
 
 How far is Vienna from being a 15-minute city? Project to collect POIs, routing and accessibility data.
 
+## Repository structure
+
 Scripts - in src/data/:
 * download_pois_networks.py -> download POIs and networks from Open Street Maps.
 * travel_times.py -> create a grid tessellation for the selected city; per each grid cell, obtain and save location of the nearest POI of given category, and the time required to reach it. 
@@ -22,9 +24,6 @@ Data - in data/raw/:
 Additional data - in notebooks/:
 * isochrone_overlap_map.html -> isochrones map.
 * isochrone_results.json -> results from isochrone_function.ipynb.
-
-
-## Repository structure
 
 ```
 .
